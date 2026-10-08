@@ -58,6 +58,12 @@ state_file() {
 	printf '%s/gnm-%s-%s' "${TMPDIR:-/tmp}" "$1" "$2"
 }
 
+# mark_note_written: record when new note content was last written in this
+# repo, so stop.sh can tell whether a session recorded anything.
+mark_note_written() {
+	date +%s >"$(git rev-parse --git-path gnm-last-note)"
+}
+
 # path_key <path>: stable hash of a path, for temp file names.
 path_key() {
 	printf '%s' "$1" | git hash-object --stdin

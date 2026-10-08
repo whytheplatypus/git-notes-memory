@@ -89,6 +89,7 @@ if [ "$ref" = "$LEARN_REF" ]; then
 		printf '%s\n' "$text" | note_put "$ref" "$obj"
 	else
 		printf '%s\n' "$text" | git notes --ref="$ref" append -F - "$obj"
+		mark_note_written
 	fi
 	protect_ref "$ref"
 	if [ -n "$force" ]; then echo "replaced learnings note"; else echo "appended to learnings note"; fi
@@ -104,5 +105,7 @@ if [ -n "$existing" ] && [ -z "$force" ] &&
 fi
 
 note_write "$ref" "$obj" current "$text"
+# Re-verifying with the same text records nothing new.
+[ "$(note_body <<<"$existing")" = "$text" ] || mark_note_written
 [ "$ref" = "$ARCH_REF" ] && protect_ref "$ref"
 echo "wrote $ref note on ${obj:0:12} for $target"

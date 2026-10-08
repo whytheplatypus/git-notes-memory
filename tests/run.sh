@@ -285,6 +285,32 @@ check T18-ignore "--ignore should stop fetching: [$out]" eval '
 	test -z "$(sysmsg <<<"$out")" && ! contains "$out" "third entry" &&
 	! contains "$(git notes --ref=origin/learnings show "$(git rev-list --max-parents=0 HEAD)")" "third entry"'
 
+# T19 session start always says when to record; Stop nudges once after
+# substantial work with no new note
+new_repo
+start_s() { jq -n --arg cwd "$PWD" --arg s "$1" '{session_id: $s, cwd: $cwd}' | "$S/session-start.sh"; }
+tr=$WORK/transcript.jsonl
+for i in $(seq 1 20); do echo '{"message":{"content":[{"type":"tool_use","name":"Read"}]}}'; done >"$tr"
+stop_s() {
+	jq -n --arg cwd "$PWD" --arg t "$tr" --arg s "$1" '{session_id: $s, cwd: $cwd, transcript_path: $t}' |
+		"$S/stop.sh" | ctx
+}
+out=$(start_s nsess | ctx)
+check T19 "when-to-record pointer missing: [$out]" contains "$out" "git-notes-memory is active"
+out=$(stop_s nsess) out2=$(stop_s nsess)
+check T19-nudge "nudge=[$out] again=[$out2]" eval '
+	contains "$out" "20 tool calls without recording" && test -z "$out2"'
+"$S/note.sh" src/main.go "Same text" >/dev/null
+echo 0 >"$(git rev-parse --git-path gnm-last-note)" # written before the session
+start_s wsess >/dev/null
+"$S/note.sh" src/main.go --force "Same text" >/dev/null
+out=$(stop_s wsess)
+check T19-same "re-verifying with the same text is not a new note: [$out]" contains "$out" "without recording"
+start_s xsess >/dev/null
+"$S/note.sh" learning "a new learning" >/dev/null
+out=$(stop_s xsess)
+check T19-new "a new learning should suppress the nudge: [$out]" test -z "$out"
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
 exit "$((fails > 0))"

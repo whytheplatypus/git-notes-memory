@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# SessionStart: fetch origin's notes (merging them only if origin is trusted,
-# else asking the user), sync file notes across new commits, and inject the
-# learnings and architecture notes with a drift check.
+# SessionStart: say when to record notes, fetch origin's notes (merging them
+# only if origin is trusted, else asking the user), sync file notes across new
+# commits, and inject the learnings and architecture notes with a drift check.
 . "$(dirname "$0")/lib.sh"
 
 hook_input
 in_repo
 
+session=$(field .session_id)
+# Session start time, for stop.sh's "nothing recorded" nudge; kept on resume.
+[ -n "$session" ] && [ ! -f "$(state_file "$session" started)" ] &&
+	date +%s >"$(state_file "$session" started)"
+
 ctx= msg= fresh= nl=$'\n'
 add() { ctx="${ctx:+$ctx$nl$nl}$1"; }
+add "git-notes-memory is active. When you are corrected, waste tool calls on something a one-line note would have prevented, or find an unstated convention or footgun, record it right away with /git-notes-memory:note (follow the git-notes skill). Put the why in a note rather than a code comment; keep code self-explanatory."
 root=$(root_commit)
 learnings() { note_read "$LEARN_REF" "$root" | note_body; }
 
