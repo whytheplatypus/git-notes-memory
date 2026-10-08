@@ -15,12 +15,6 @@ usage() {
 	exit 2
 }
 
-# protect_ref <ref>: carry notes on rewritten commits (amend, rebase).
-protect_ref() {
-	git config --get-all notes.rewriteRef | grep -qx "refs/notes/$1" ||
-		git config --add notes.rewriteRef "refs/notes/$1"
-}
-
 # list_notes: root-commit notes, then file notes on the current version of
 # each file (working tree if modified, else index); older versions are counted.
 list_notes() {

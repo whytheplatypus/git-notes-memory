@@ -15,6 +15,8 @@ session=$(field .session_id)
 ctx= msg= fresh= nl=$'\n'
 add() { ctx="${ctx:+$ctx$nl$nl}$1"; }
 add "git-notes-memory is active. When you are corrected, waste tool calls on something a one-line note would have prevented, or find an unstated convention or footgun, record it right away with /git-notes-memory:note (follow the git-notes skill). Put the why in a note rather than a code comment; keep code self-explanatory."
+[ -z "$(git for-each-ref "refs/notes/$FILE_REF" "refs/notes/$LEARN_REF" "refs/notes/$ARCH_REF")" ] &&
+	add "This repo has no notes yet. If the user is doing substantial work here, suggest they run /git-notes-memory:init, which drafts an architecture note for their approval and imports existing learnings."
 root=$(root_commit)
 learnings() { note_read "$LEARN_REF" "$root" | note_body; }
 

@@ -268,8 +268,9 @@ check T18 "untrusted origin should ask, not load: [$out]" eval '
 	contains "$(ctx <<<"$out")" "not loaded" && ! contains "$out" "origin entry" &&
 	test -z "$(git for-each-ref refs/notes/learnings)"'
 "$S/sync.sh" --trust >/dev/null
-check T18-trust "--trust should merge and trust" eval '
+check T18-trust "--trust should merge, trust and protect root notes" eval '
 	contains "$("$S/note.sh" learning)" "origin entry" &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/learnings &&
 	test "$(git config gitnotesmemory.trustedRemote)" = "$remote"'
 (cd "$origin_repo" && "$S/note.sh" learning "second entry" >/dev/null && "$S/sync.sh" --push >/dev/null)
 out=$(start)
@@ -310,6 +311,22 @@ start_s xsess >/dev/null
 "$S/note.sh" learning "a new learning" >/dev/null
 out=$(stop_s xsess)
 check T19-new "a new learning should suppress the nudge: [$out]" test -z "$out"
+
+# T20 init: suggested only in a repo with no notes; init.sh reports and
+# protects the root-commit notes
+new_repo
+out=$(start | ctx)
+check T20 "init not suggested in an empty repo: [$out]" contains "$out" "/git-notes-memory:init"
+mkdir .agent && echo "gotcha | confirmed" >.agent/learnings.md
+out=$("$S/init.sh")
+check T20-report "init report wrong: [$out]" eval '
+	contains "$out" "architecture note: missing" && contains "$out" "found: .agent/learnings.md" &&
+	contains "$out" "origin: none" &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/architecture &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/learnings'
+"$S/note.sh" learning "first" >/dev/null
+out=$(start | ctx)
+check T20-quiet "init suggested in a repo with notes: [$out]" eval '! contains "$out" "/git-notes-memory:init"'
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi

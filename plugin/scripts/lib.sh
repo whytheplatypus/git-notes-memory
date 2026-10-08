@@ -58,6 +58,12 @@ state_file() {
 	printf '%s/gnm-%s-%s' "${TMPDIR:-/tmp}" "$1" "$2"
 }
 
+# protect_ref <ref>: carry notes on rewritten commits (amend, rebase).
+protect_ref() {
+	git config --get-all notes.rewriteRef | grep -qx "refs/notes/$1" ||
+		git config --add notes.rewriteRef "refs/notes/$1"
+}
+
 # mark_note_written: record when new note content was last written in this
 # repo, so stop.sh can tell whether a session recorded anything.
 mark_note_written() {

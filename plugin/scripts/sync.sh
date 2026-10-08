@@ -39,6 +39,7 @@ case ${1:-} in
 	fetch_staged || echo "git-notes-memory: fetch from origin failed" >&2
 	changes=$(merge_staged)
 	[ -z "$changes" ] || echo "git-notes-memory: merged from origin: $changes"
+	protect_ref "$ARCH_REF" && protect_ref "$LEARN_REF"
 	if [ "$1" = --trust ]; then
 		set_remote trusted && echo "git-notes-memory: trusted origin ($url)"
 		exit 0
