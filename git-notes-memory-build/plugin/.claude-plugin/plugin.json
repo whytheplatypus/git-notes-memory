@@ -1,0 +1,5 @@
+{
+  "name": "git-notes-memory",
+  "version": "0.1.0",
+  "description": "Git-native project memory: an architecture note on the root commit and file notes on blobs, kept current across edits and commits."
+}

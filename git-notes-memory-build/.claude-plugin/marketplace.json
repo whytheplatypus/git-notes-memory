@@ -1,0 +1,14 @@
+{
+  "name": "git-notes-local",
+  "description": "Local test marketplace for git-notes-memory",
+  "owner": {
+    "name": "David Gage"
+  },
+  "plugins": [
+    {
+      "name": "git-notes-memory",
+      "source": "./plugin",
+      "description": "Git-native project memory: architecture and file notes in git notes refs"
+    }
+  ]
+}

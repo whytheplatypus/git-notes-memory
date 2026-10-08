@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Automated tests for git-notes-memory: run hook scripts against scratch repos
+# by piping fake hook JSON to stdin.
+set -u
+S=$(cd "$(dirname "$0")/../plugin/scripts" && pwd)
+WORK=$(mktemp -d)
+export TMPDIR=$WORK/tmp GIT_CONFIG_GLOBAL=$WORK/gitconfig GIT_CONFIG_NOSYSTEM=1
+unset GIT_NOTES_MEMORY_SYNC
+mkdir -p "$TMPDIR"
+git config --global user.name test
+git config --global user.email test@example.com
+git config --global init.defaultBranch main
+trap 'rm -rf "$WORK"' EXIT
+
+fails=0
+pass() { echo "PASS $1"; }
+fail() { echo "FAIL $1: $2"; fails=$((fails + 1)); }
+check() { # check <name> <description> <command...>
+	local name=$1 what=$2
+	shift 2
+	if "$@"; then pass "$name"; else fail "$name" "$what"; fi
+}
+
+hook() { # hook <script> <tool> <path> [session]
+	jq -n --arg cwd "$PWD" --arg t "$2" --arg p "$3" --arg s "${4:-sess}" \
+		'{session_id: $s, cwd: $cwd, tool_name: $t, tool_input: {file_path: $p}}' |
+		"$S/$1.sh"
+}
+start() { jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/session-start.sh"; }
+ctx() { jq -r '.hookSpecificOutput.additionalContext // empty'; }
+commit() { git add -A && git commit -qm "$1"; }
+fnote() { git notes --ref=file-notes show "$1" 2>/dev/null; }
+contains() { grep -qF -- "$2" <<<"$1"; }
+
+new_repo() {
+	R=$(mktemp -d "$WORK/repo.XXXX")
+	cd "$R" && git init -q
+	mkdir src && echo 'package main' >src/main.go && echo 'module x' >go.mod
+	commit init
+}
+
+# T1 outside a repo: all scripts exit 0, no output
+cd "$(mktemp -d "$WORK/norepo.XXXX")"
+echo hi >f
+out= rc=0
+for s in session-start pre-tool post-tool stop; do
+	out+=$(hook "$s" Edit "$PWD/f") || rc=1
+done
+out+=$("$S/sync.sh") || rc=1
+check T1 "rc=$rc out=[$out]" test "$rc$out" = 0
+
+# T2 write + read architecture note on root commit
+new_repo
+echo 'more' >>src/main.go && commit second
+"$S/note.sh" architecture "Layered: cmd -> svc -> store" >/dev/null
+root=$(git rev-list --max-parents=0 HEAD)
+out=$(start | ctx)
+check T2 "arch note missing at session start: [$out]" \
+	contains "$(git notes --ref=architecture show "$root")$out" "Layered: cmd -> svc -> store"
+
+# T3 file note write + read at current blob
+"$S/note.sh" src/main.go "Entry point; keep flag parsing here" >/dev/null
+out=$(hook pre-tool Read "$R/src/main.go" | ctx)
+check T3 "file note not injected: [$out]" contains "$out" "keep flag parsing here"
+
+# T4 no note → silent
+out=$(hook pre-tool Read "$R/go.mod")
+check T4 "expected no output: [$out]" test -z "$out"
+
+# T5 edit file → post-tool migrates note, needs-review, migrated-from, old intact
+old=$(git hash-object src/main.go)
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// edited' >>src/main.go
+out=$(hook post-tool Edit "$R/src/main.go" | ctx)
+new=$(git hash-object src/main.go)
+n=$(fnote "$new")
+check T5 "migration wrong: new=[$n] ctx=[$out]" eval '
+	contains "$n" "status: needs-review" && contains "$n" "migrated-from: $old" &&
+	contains "$n" "keep flag parsing here" && contains "$(fnote "$old")" "status: current" &&
+	contains "$out" "needs-review"'
+# Stop hook reminds, and honors stop_hook_active.
+out=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd, stop_hook_active: false}' | "$S/stop.sh" | ctx)
+out2=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd, stop_hook_active: true}' | "$S/stop.sh")
+check T5-stop "stop=[$out] active=[$out2]" eval 'contains "$out" "src/main.go" && test -z "$out2"'
+out=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/stop.sh")
+check T5-once "stop should remind only once: [$out]" test -z "$out"
+"$S/note.sh" src/main.go "Entry point; re-verified" >/dev/null
+commit edit
+
+# T6 pure rename → note still resolves
+git mv src/main.go src/app.go && commit rename
+out=$(hook pre-tool Read "$R/src/app.go" | ctx)
+check T6 "rename lost note: [$out]" contains "$out" "re-verified"
+
+# T7 external commit changing a file → sync.sh migrates
+start >/dev/null # record last-synced
+echo '// external' >>src/app.go && commit external
+"$S/sync.sh" >/dev/null
+n=$(fnote "$(git hash-object src/app.go)")
+check T7 "sync did not migrate: [$n]" eval 'contains "$n" "status: needs-review" && contains "$n" "re-verified"'
+
+# T8 miss at current blob → --follow fallback finds earlier note, stale label
+new_repo
+seq 1 20 >>src/main.go && commit grow # big enough for rename detection
+"$S/note.sh" src/main.go "Original rationale" >/dev/null
+git mv src/main.go src/old.go && echo '// x' >>src/old.go && commit "rename+edit"
+out=$(hook pre-tool Read "$R/src/old.go" | ctx)
+check T8 "fallback missing: [$out]" eval 'contains "$out" "Original rationale" && contains "$out" "possibly stale"'
+
+# T9 amend/rebase: root-keyed architecture note survives (rewriteRef)
+new_repo
+"$S/note.sh" architecture "Survives amend" >/dev/null
+git commit -q --amend -m "init amended"
+root=$(git rev-list --max-parents=0 HEAD)
+echo y >y && commit second && git rebase -q --root --force-rebase
+root2=$(git rev-list --max-parents=0 HEAD)
+check T9 "note lost after amend/rebase" eval '
+	contains "$(git notes --ref=architecture show "$root")" "Survives amend" &&
+	contains "$(git notes --ref=architecture show "$root2")" "Survives amend"'
+out=$(start | ctx)
+check T9-stale "rewritten verified-at should be flagged: [$out]" contains "$out" "STALE"
+
+# T10 drift: change go.mod / top-level dirs after verification → drift message
+new_repo
+"$S/note.sh" architecture "Arch" >/dev/null
+out=$(start | ctx)
+check T10-clean "unexpected drift: [$out]" eval '! contains "$out" "DRIFT"'
+echo 'require y v1' >>go.mod && mkdir web && echo x >web/i.html && commit drift
+out=$(start | ctx)
+check T10 "drift not reported: [$out]" eval '
+	contains "$out" "ARCHITECTURE DRIFT" && contains "$out" "go.mod" &&
+	contains "$out" "added dir: web" && contains "$out" "never overwrite"'
+
+# T11 notes survive git gc (including notes on uncommitted blobs)
+echo 'draft' >draft.txt
+"$S/note.sh" draft.txt "Uncommitted draft" >/dev/null
+h=$(git hash-object draft.txt)
+rm draft.txt
+git gc -q --prune=now 2>/dev/null
+check T11 "notes lost after gc" eval '
+	contains "$(fnote "$h")" "Uncommitted draft" &&
+	contains "$(git notes --ref=architecture show "$(git rev-list --max-parents=0 HEAD)")" "Arch"'
+
+# T12 sync disabled by default: no fetch/push attempted
+remote=$(mktemp -d "$WORK/remote.XXXX")
+git init -q --bare "$remote"
+git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null
+git --git-dir="$remote" notes --ref=remoteonly add -m "remote only" HEAD
+start >/dev/null
+out=$("$S/sync.sh" --push)
+check T12 "notes moved without GIT_NOTES_MEMORY_SYNC: [$out]" eval '
+	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
+	test -z "$(git for-each-ref refs/notes/remoteonly)" && contains "$out" "push skipped"'
+# Control: with GIT_NOTES_MEMORY_SYNC=1 both directions work.
+GIT_NOTES_MEMORY_SYNC=1 start >/dev/null
+GIT_NOTES_MEMORY_SYNC=1 "$S/sync.sh" --push
+check T12-enabled "sync=1 should fetch and push" eval '
+	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
+	test -n "$(git for-each-ref refs/notes/remoteonly)"'
+
+# T13 learnings: append, inject at session start, survive amend, --force replaces
+new_repo
+"$S/note.sh" learning "convention: wrap errors" >/dev/null
+"$S/note.sh" learning "gotcha: run make gen" >/dev/null
+git commit -q --amend -m "init amended"
+out=$(start | ctx)
+check T13 "learnings not appended/injected after amend: [$out]" eval '
+	contains "$out" "repo learnings" && contains "$out" "wrap errors" && contains "$out" "make gen"'
+"$S/note.sh" learning --force "gotcha: run make gen" >/dev/null
+out=$("$S/note.sh" learning)
+check T13-replace "--force should replace: [$out]" eval '! contains "$out" "wrap errors" && contains "$out" "make gen"'
+
+# T14 --list: notes by path and status; older versions counted
+"$S/note.sh" go.mod "Pinned module path" >/dev/null
+"$S/note.sh" src/main.go "Entry" >/dev/null
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// e' >>src/main.go
+hook post-tool Edit "$R/src/main.go" >/dev/null
+out=$("$S/note.sh" --list)
+check T14 "list wrong: [$out]" eval '
+	contains "$out" "learnings	(root commit)" && contains "$out" "current	go.mod" &&
+	contains "$out" "needs-review	src/main.go" && contains "$out" "1 note(s) on older file versions"'
+
+# T15 --delete removes a file note
+"$S/note.sh" go.mod --delete >/dev/null
+check T15 "note not deleted" test -z "$(fnote "$(git hash-object go.mod)")"
+
+echo
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
+exit "$((fails > 0))"
