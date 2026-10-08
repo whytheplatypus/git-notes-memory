@@ -5,7 +5,6 @@ set -u
 S=$(cd "$(dirname "$0")/../plugin/scripts" && pwd)
 WORK=$(mktemp -d)
 export TMPDIR=$WORK/tmp GIT_CONFIG_GLOBAL=$WORK/gitconfig GIT_CONFIG_NOSYSTEM=1
-unset GIT_NOTES_MEMORY_SYNC
 mkdir -p "$TMPDIR"
 git config --global user.name test
 git config --global user.email test@example.com
@@ -87,6 +86,25 @@ check T5-once "stop should remind only once: [$out]" test -z "$out"
 "$S/note.sh" src/main.go "Entry point; re-verified" >/dev/null
 commit edit
 
+# Stop hook judges the file's current version: an edit outside Edit/Write
+# that gets re-verified clears the reminder; one that leaves the note behind
+# still reminds.
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// edit' >>src/main.go
+hook post-tool Edit "$R/src/main.go" >/dev/null
+echo '// bash edit' >>src/main.go
+"$S/note.sh" src/main.go "Entry point; re-verified after bash edit" >/dev/null
+out=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/stop.sh")
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// edit 2' >>src/main.go
+hook post-tool Edit "$R/src/main.go" >/dev/null
+echo '// bash edit 2' >>src/main.go
+out2=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/stop.sh" | ctx)
+check T5-current "stop: re-verified=[$out] left-behind=[$out2]" eval '
+	test -z "$out" && contains "$out2" "src/main.go"'
+"$S/note.sh" src/main.go "Entry point; re-verified" >/dev/null
+commit edit2
+
 # T6 pure rename → note still resolves
 git mv src/main.go src/app.go && commit rename
 out=$(hook pre-tool Read "$R/src/app.go" | ctx)
@@ -141,22 +159,39 @@ check T11 "notes lost after gc" eval '
 	contains "$(fnote "$h")" "Uncommitted draft" &&
 	contains "$(git notes --ref=architecture show "$(git rev-list --max-parents=0 HEAD)")" "Arch"'
 
-# T12 sync disabled by default: no fetch/push attempted
+# T12 session start only stages remote notes; --push pushes our refs, not
+# meta, and trusts origin
 remote=$(mktemp -d "$WORK/remote.XXXX")
 git init -q --bare "$remote"
 git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null
 git --git-dir="$remote" notes --ref=remoteonly add -m "remote only" HEAD
-start >/dev/null
-out=$("$S/sync.sh" --push)
-check T12 "notes moved without GIT_NOTES_MEMORY_SYNC: [$out]" eval '
-	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
-	test -z "$(git for-each-ref refs/notes/remoteonly)" && contains "$out" "push skipped"'
-# Control: with GIT_NOTES_MEMORY_SYNC=1 both directions work.
-GIT_NOTES_MEMORY_SYNC=1 start >/dev/null
-GIT_NOTES_MEMORY_SYNC=1 "$S/sync.sh" --push
-check T12-enabled "sync=1 should fetch and push" eval '
+out=$(start)
+check T12 "remote notes leaked into local refs: [$out]" eval '
+	test -z "$(git for-each-ref refs/notes/remoteonly)" &&
+	test -n "$(git for-each-ref refs/notes/origin/remoteonly)" && ! contains "$out" "--trust"'
+"$S/sync.sh" --push >/dev/null
+check T12-push "push should send file-notes and architecture, not meta, and trust origin" eval '
 	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
-	test -n "$(git for-each-ref refs/notes/remoteonly)"'
+	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/architecture)" &&
+	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/meta)" &&
+	test "$(git config gitnotesmemory.trustedRemote)" = "$remote"'
+
+# T12-merge diverged clones: learnings union, file-note conflict keeps local
+clone=$(mktemp -d "$WORK/clone.XXXX")
+git clone -q "$remote" "$clone" && git -C "$clone" fetch -q origin 'refs/notes/*:refs/notes/*'
+"$S/note.sh" learning "shared entry" >/dev/null
+"$S/sync.sh" --push >/dev/null
+(cd "$clone" && "$S/note.sh" learning "clone entry" >/dev/null &&
+	"$S/note.sh" go.mod "clone go.mod note" >/dev/null && "$S/sync.sh" --push >/dev/null)
+"$S/note.sh" learning "local entry" >/dev/null
+"$S/note.sh" go.mod "local go.mod note" >/dev/null
+out=$("$S/sync.sh" --push 2>&1)
+l=$("$S/note.sh" learning)
+check T12-merge "merge wrong: out=[$out] learnings=[$l]" eval '
+	test "$(grep -c "shared entry" <<<"$l")" = 1 && contains "$l" "clone entry" &&
+	contains "$l" "local entry" && contains "$out" "conflict: kept local file-notes" &&
+	contains "$(fnote "$(git hash-object go.mod)")" "local go.mod note" &&
+	test "$(git rev-parse refs/notes/learnings)" = "$(git --git-dir="$remote" rev-parse refs/notes/learnings)"'
 
 # T13 learnings: append, inject at session start, survive amend, --force replaces
 new_repo
@@ -184,6 +219,114 @@ check T14 "list wrong: [$out]" eval '
 # T15 --delete removes a file note
 "$S/note.sh" go.mod --delete >/dev/null
 check T15 "note not deleted" test -z "$(fnote "$(git hash-object go.mod)")"
+
+# T16 Bash: notes for files named in the command, once per session
+new_repo
+"$S/note.sh" src/main.go "Bash-visible note" >/dev/null
+bash_hook() { # bash_hook <command> [session]
+	jq -n --arg cwd "$PWD" --arg c "$1" --arg s "${2:-bsess}" \
+		'{session_id: $s, cwd: $cwd, tool_name: "Bash", tool_input: {command: $c}}' |
+		"$S/pre-tool.sh"
+}
+out=$(bash_hook "sed -n 1,5p 'src/main.go' | head" | ctx)
+check T16 "bash note missing: [$out]" contains "$out" "Bash-visible note"
+out=$(bash_hook "cat src/main.go")
+check T16-once "bash note repeated: [$out]" test -z "$out"
+out=$(hook pre-tool Read "$R/src/main.go" bsess | ctx)
+check T16-read "Read should still show the note: [$out]" contains "$out" "Bash-visible note"
+out=$(bash_hook "ls -la; echo hi" other)
+check T16-none "expected no output: [$out]" test -z "$out"
+
+# T17 NotebookEdit: notebook_path is used, and the note migrates
+echo '{}' >nb.ipynb && commit nb
+"$S/note.sh" nb.ipynb "Notebook note" >/dev/null
+nb_hook() {
+	jq -n --arg cwd "$PWD" --arg p "$R/nb.ipynb" \
+		'{session_id: "sess", cwd: $cwd, tool_name: "NotebookEdit", tool_input: {notebook_path: $p}}' |
+		"$S/$1.sh"
+}
+out=$(nb_hook pre-tool | ctx)
+echo '{"cells": []}' >nb.ipynb
+out2=$(nb_hook post-tool | ctx)
+check T17 "notebook: pre=[$out] post=[$out2]" eval '
+	contains "$out" "Notebook note" && contains "$out2" "needs-review"'
+
+# T18 fresh clone: notes staged and the user asked; --trust merges; later
+# sessions merge and announce; --ignore stops fetching
+sysmsg() { jq -r '.systemMessage // empty'; }
+new_repo
+origin_repo=$R remote=$(mktemp -d "$WORK/remote.XXXX")
+git init -q --bare "$remote"
+"$S/note.sh" learning "origin entry" >/dev/null
+git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null && "$S/sync.sh" --push >/dev/null
+fresh=$(mktemp -d "$WORK/fresh.XXXX")
+git clone -q "$remote" "$fresh" && cd "$fresh"
+out=$(start)
+check T18 "untrusted origin should ask, not load: [$out]" eval '
+	contains "$(sysmsg <<<"$out")" "1 learnings entries" &&
+	contains "$(sysmsg <<<"$out")" "notes-sync --trust" &&
+	contains "$(ctx <<<"$out")" "not loaded" && ! contains "$out" "origin entry" &&
+	test -z "$(git for-each-ref refs/notes/learnings)"'
+"$S/sync.sh" --trust >/dev/null
+check T18-trust "--trust should merge, trust and protect root notes" eval '
+	contains "$("$S/note.sh" learning)" "origin entry" &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/learnings &&
+	test "$(git config gitnotesmemory.trustedRemote)" = "$remote"'
+(cd "$origin_repo" && "$S/note.sh" learning "second entry" >/dev/null && "$S/sync.sh" --push >/dev/null)
+out=$(start)
+check T18-merge "trusted session start should merge and announce: [$out]" eval '
+	contains "$(sysmsg <<<"$out")" "merged notes from origin" &&
+	contains "$(sysmsg <<<"$out")" "+1 learnings entries" &&
+	contains "$(ctx <<<"$out")" "just merged from origin (written on another clone" &&
+	contains "$(ctx <<<"$out")" "second entry"'
+"$S/sync.sh" --ignore >/dev/null
+(cd "$origin_repo" && "$S/note.sh" learning "third entry" >/dev/null && "$S/sync.sh" --push >/dev/null)
+out=$(start)
+check T18-ignore "--ignore should stop fetching: [$out]" eval '
+	test -z "$(sysmsg <<<"$out")" && ! contains "$out" "third entry" &&
+	! contains "$(git notes --ref=origin/learnings show "$(git rev-list --max-parents=0 HEAD)")" "third entry"'
+
+# T19 session start always says when to record; Stop nudges once after
+# substantial work with no new note
+new_repo
+start_s() { jq -n --arg cwd "$PWD" --arg s "$1" '{session_id: $s, cwd: $cwd}' | "$S/session-start.sh"; }
+tr=$WORK/transcript.jsonl
+for i in $(seq 1 20); do echo '{"message":{"content":[{"type":"tool_use","name":"Read"}]}}'; done >"$tr"
+stop_s() {
+	jq -n --arg cwd "$PWD" --arg t "$tr" --arg s "$1" '{session_id: $s, cwd: $cwd, transcript_path: $t}' |
+		"$S/stop.sh" | ctx
+}
+out=$(start_s nsess | ctx)
+check T19 "when-to-record pointer missing: [$out]" contains "$out" "git-notes-memory is active"
+out=$(stop_s nsess) out2=$(stop_s nsess)
+check T19-nudge "nudge=[$out] again=[$out2]" eval '
+	contains "$out" "20 tool calls without recording" && test -z "$out2"'
+"$S/note.sh" src/main.go "Same text" >/dev/null
+echo 0 >"$(git rev-parse --git-path gnm-last-note)" # written before the session
+start_s wsess >/dev/null
+"$S/note.sh" src/main.go --force "Same text" >/dev/null
+out=$(stop_s wsess)
+check T19-same "re-verifying with the same text is not a new note: [$out]" contains "$out" "without recording"
+start_s xsess >/dev/null
+"$S/note.sh" learning "a new learning" >/dev/null
+out=$(stop_s xsess)
+check T19-new "a new learning should suppress the nudge: [$out]" test -z "$out"
+
+# T20 init: suggested only in a repo with no notes; init.sh reports and
+# protects the root-commit notes
+new_repo
+out=$(start | ctx)
+check T20 "init not suggested in an empty repo: [$out]" contains "$out" "/git-notes-memory:init"
+mkdir .agent && echo "gotcha | confirmed" >.agent/learnings.md
+out=$("$S/init.sh")
+check T20-report "init report wrong: [$out]" eval '
+	contains "$out" "architecture note: missing" && contains "$out" "found: .agent/learnings.md" &&
+	contains "$out" "origin: none" &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/architecture &&
+	git config --get-all notes.rewriteRef | grep -qx refs/notes/learnings'
+"$S/note.sh" learning "first" >/dev/null
+out=$(start | ctx)
+check T20-quiet "init suggested in a repo with notes: [$out]" eval '! contains "$out" "/git-notes-memory:init"'
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi

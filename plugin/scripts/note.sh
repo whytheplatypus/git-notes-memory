@@ -15,12 +15,6 @@ usage() {
 	exit 2
 }
 
-# protect_ref <ref>: carry notes on rewritten commits (amend, rebase).
-protect_ref() {
-	git config --get-all notes.rewriteRef | grep -qx "refs/notes/$1" ||
-		git config --add notes.rewriteRef "refs/notes/$1"
-}
-
 # list_notes: root-commit notes, then file notes on the current version of
 # each file (working tree if modified, else index); older versions are counted.
 list_notes() {
@@ -89,6 +83,7 @@ if [ "$ref" = "$LEARN_REF" ]; then
 		printf '%s\n' "$text" | note_put "$ref" "$obj"
 	else
 		printf '%s\n' "$text" | git notes --ref="$ref" append -F - "$obj"
+		mark_note_written
 	fi
 	protect_ref "$ref"
 	if [ -n "$force" ]; then echo "replaced learnings note"; else echo "appended to learnings note"; fi
@@ -104,5 +99,7 @@ if [ -n "$existing" ] && [ -z "$force" ] &&
 fi
 
 note_write "$ref" "$obj" current "$text"
+# Re-verifying with the same text records nothing new.
+[ "$(note_body <<<"$existing")" = "$text" ] || mark_note_written
 [ "$ref" = "$ARCH_REF" ] && protect_ref "$ref"
 echo "wrote $ref note on ${obj:0:12} for $target"

@@ -35,7 +35,9 @@ Notes without a header are treated as `status: current`.
 /git-notes-memory:note architecture "text"      architecture note (propose-only for Claude)
 /git-notes-memory:note <target>                 show; add --delete to remove
 /git-notes-memory:note --list                   every note, with status and path
-/git-notes-memory:notes-sync [--push]           migrate notes across new commits
+/git-notes-memory:notes-sync [--push]           migrate notes across new commits; --push merges and pushes
+/git-notes-memory:notes-sync --trust|--ignore   merge origin's notes and trust it, or stop asking
+/git-notes-memory:init                          seed a repo: draft an architecture note, import learnings
 ```
 
 ## Layout
@@ -46,6 +48,7 @@ plugin/                     the plugin (source of truth)
   skills/git-notes/         protocol Claude follows (background, not in the / menu)
   skills/note/              /git-notes-memory:note
   skills/notes-sync/        /git-notes-memory:notes-sync
+  skills/init/              /git-notes-memory:init
   hooks/hooks.json          SessionStart, PreToolUse, PostToolUse, Stop
   scripts/                  lib.sh plus one script per hook/command
 .claude-plugin/marketplace.json   local test marketplace "git-notes-local" (source ./plugin)
@@ -59,12 +62,11 @@ The repo root is the marketplace, and its entry points straight at `plugin/`, so
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `GIT_NOTES_MEMORY_SYNC` | unset | Set to `1` to fetch `refs/notes/*` from `origin` at session start and let `/git-notes-memory:notes-sync --push` push them. Unset means local-only: nothing is ever fetched or pushed. |
 | `TMPDIR` | `/tmp` | Where the per-session state files (`gnm-<session_id>-*`) are written. |
 
 ## Requirements
 
-`bash`, `git`, `jq`. Every script exits 0 silently outside a git repo.
+`bash`, `git` 2.30 or later (for `git config --fixed-value`), `jq`. Every script exits 0 silently outside a git repo.
 
 ## Design notes
 
@@ -79,6 +81,10 @@ Deviations from the original plan, and why.
 - **`--list` and `--delete`** were added for pruning. `--list` treats the working-tree version of a modified file as current, and counts notes on older versions instead of listing them.
 - **Stop hook reminds once** per batch of edits, then clears its list, so an unresolved note doesn't trigger a reminder on every later turn.
 - **Marketplace** lives at the repo root with `source: ./plugin`, instead of a copied `marketplace/plugins/` tree.
-- **`sync.sh --push`** was added so `/git-notes-memory:notes-sync` can push notes. It only pushes when `GIT_NOTES_MEMORY_SYNC=1` and an `origin` remote exists. Nothing pushes automatically.
+- **Remote notes and trust:** every session start fetches origin's `refs/notes/*` into `refs/notes/origin/*` (staged), with no credential prompts and a 10s limit. Staged notes are merged into the local refs only when origin's URL is trusted (`git config gitnotesmemory.trustedRemote`). For an untrusted origin with notes, the hook shows you a `systemMessage` asking you to run `/git-notes-memory:notes-sync --trust` or `--ignore` (`gitnotesmemory.ignoredRemote`), and nothing staged reaches Claude's context. A successful `--push` also trusts origin. When a trusted fetch brings changes, a `systemMessage` says what came in, and newly merged learnings entries are shown to Claude in their own section, marked as written elsewhere. The skill sets `disable-model-invocation`, so the menu command is yours, though Claude could still run `sync.sh` through Bash.
+- **Merging and pushing:** only `file-notes`, `learnings` and `architecture` are merged and pushed. `refs/notes/meta` holds per-clone state and is never pushed. When the same note changed on both sides, learnings keep every entry (local first, then the remote entries that aren't already present). For other notes, the local note wins, unless it is `needs-review` and the remote one is `current`. Each local-wins conflict is printed as `conflict:`.
 - **Migrated notes keep their original `verified-at`.** They are not stamped with the current HEAD, because they haven't been re-verified.
+- **Bash reads:** `pre-tool.sh` also matches `Bash`. It treats each token of the command that names an existing file as a read, up to 5 files per call. For Bash, a note already shown this session is skipped; Read, Edit and Write always show it. Commands that don't name a file (`grep -r foo .`) are not caught, and Bash edits don't migrate notes.
+- **The protocol ships with the plugin**, so it no longer lives in each user's CLAUDE.md. The `git-notes` skill holds when to write, where, the format, pruning, and the preference for notes over code comments. Its description also matches writing moments (after a correction or wasted tool calls), not only repos that have notes. Session start adds a short pointer in every repo, since the first note has to come from a repo with none. Once per session, the Stop hook asks whether anything met the bar after 20 or more tool calls (counted from `transcript_path`) with no new note. "New" means `note.sh` wrote different text, recorded in `.git/gnm-last-note`; re-verifying with the same text doesn't count.
+- **`/git-notes-memory:init`** seeds content rather than configuration, since the plugin works without setup. `init.sh` sets `notes.rewriteRef` for the root-commit notes (`--trust` and `--push` do too, since a clone that only received notes wouldn't otherwise have it) and reports what exists. The skill then has Claude draft an architecture note for your approval, import `.agent/learnings.md`, and propose moving repo learnings out of the project CLAUDE.md. It never moves code comments. Session start suggests it only in repos with no notes.
 - **Repo resolution:** `pre-tool.sh` and `post-tool.sh` resolve git from the edited file's directory, not the session `cwd`, so a file in a nested or sibling repo uses that repo's notes.

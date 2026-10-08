@@ -87,7 +87,7 @@ rm -rf ~/tmp/gnm-poc
 ## 8. Before promoting
 
 - Push this repo to GitHub, then register it with `claude plugin marketplace add owner/repo`.
-- Turn on `GIT_NOTES_MEMORY_SYNC=1` against a throwaway remote first. Fetching uses non-forced `refs/notes/*:refs/notes/*`, so diverged notes refs fail to update instead of being overwritten.
+- Try `/git-notes-memory:notes-sync --push` and `--trust` against a throwaway remote first. Fetches only stage notes under `refs/notes/origin/*`; nothing is merged into the local refs until origin is trusted.
 
 ## Design notes
 
