@@ -59,7 +59,7 @@ The repo root is the marketplace, and its entry points straight at `plugin/`, so
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `GIT_NOTES_MEMORY_SYNC` | unset | Set to `1` to fetch `refs/notes/*` from `origin` at session start and let `/git-notes-memory:notes-sync --push` push them. Unset means local-only: nothing is ever fetched or pushed. |
+| `GIT_NOTES_MEMORY_SYNC` | unset | Set to `1` to fetch `refs/notes/*` from `origin` at session start. Unset means nothing is fetched automatically. `/git-notes-memory:notes-sync --push` does not depend on it. |
 | `TMPDIR` | `/tmp` | Where the per-session state files (`gnm-<session_id>-*`) are written. |
 
 ## Requirements
@@ -79,6 +79,6 @@ Deviations from the original plan, and why.
 - **`--list` and `--delete`** were added for pruning. `--list` treats the working-tree version of a modified file as current, and counts notes on older versions instead of listing them.
 - **Stop hook reminds once** per batch of edits, then clears its list, so an unresolved note doesn't trigger a reminder on every later turn.
 - **Marketplace** lives at the repo root with `source: ./plugin`, instead of a copied `marketplace/plugins/` tree.
-- **`sync.sh --push`** was added so `/git-notes-memory:notes-sync` can push notes. It only pushes when `GIT_NOTES_MEMORY_SYNC=1` and an `origin` remote exists. Nothing pushes automatically.
+- **`sync.sh --push`** was added so `/git-notes-memory:notes-sync` can push notes. The skill sets `disable-model-invocation`, so only you can trigger a push. It fetches origin's `file-notes`, `learnings` and `architecture` refs into `refs/notes/origin/*`, merges each into the local ref, then pushes those three. `refs/notes/meta` holds per-clone state and is never pushed. When the same note changed on both sides, learnings keep every entry (local first, then the remote entries that aren't already present). For other notes, the local note wins, unless it is `needs-review` and the remote one is `current`. Each local-wins conflict is printed as `conflict:`.
 - **Migrated notes keep their original `verified-at`.** They are not stamped with the current HEAD, because they haven't been re-verified.
 - **Repo resolution:** `pre-tool.sh` and `post-tool.sh` resolve git from the edited file's directory, not the session `cwd`, so a file in a nested or sibling repo uses that repo's notes.

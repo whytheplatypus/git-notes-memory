@@ -141,22 +141,37 @@ check T11 "notes lost after gc" eval '
 	contains "$(fnote "$h")" "Uncommitted draft" &&
 	contains "$(git notes --ref=architecture show "$(git rev-list --max-parents=0 HEAD)")" "Arch"'
 
-# T12 sync disabled by default: no fetch/push attempted
+# T12 session start never fetches by default; --push pushes our refs, not meta
 remote=$(mktemp -d "$WORK/remote.XXXX")
 git init -q --bare "$remote"
 git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null
 git --git-dir="$remote" notes --ref=remoteonly add -m "remote only" HEAD
 start >/dev/null
-out=$("$S/sync.sh" --push)
-check T12 "notes moved without GIT_NOTES_MEMORY_SYNC: [$out]" eval '
-	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
-	test -z "$(git for-each-ref refs/notes/remoteonly)" && contains "$out" "push skipped"'
-# Control: with GIT_NOTES_MEMORY_SYNC=1 both directions work.
-GIT_NOTES_MEMORY_SYNC=1 start >/dev/null
-GIT_NOTES_MEMORY_SYNC=1 "$S/sync.sh" --push
-check T12-enabled "sync=1 should fetch and push" eval '
+check T12 "fetched without GIT_NOTES_MEMORY_SYNC" test -z "$(git for-each-ref refs/notes/remoteonly)"
+"$S/sync.sh" --push
+check T12-push "push should send file-notes and architecture, not meta" eval '
 	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
-	test -n "$(git for-each-ref refs/notes/remoteonly)"'
+	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/architecture)" &&
+	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/meta)"'
+GIT_NOTES_MEMORY_SYNC=1 start >/dev/null
+check T12-enabled "sync=1 should fetch at session start" test -n "$(git for-each-ref refs/notes/remoteonly)"
+
+# T12-merge diverged clones: learnings union, file-note conflict keeps local
+clone=$(mktemp -d "$WORK/clone.XXXX")
+git clone -q "$remote" "$clone" && git -C "$clone" fetch -q origin 'refs/notes/*:refs/notes/*'
+"$S/note.sh" learning "shared entry" >/dev/null
+"$S/sync.sh" --push
+(cd "$clone" && "$S/note.sh" learning "clone entry" >/dev/null &&
+	"$S/note.sh" go.mod "clone go.mod note" >/dev/null && "$S/sync.sh" --push)
+"$S/note.sh" learning "local entry" >/dev/null
+"$S/note.sh" go.mod "local go.mod note" >/dev/null
+out=$("$S/sync.sh" --push 2>&1)
+l=$("$S/note.sh" learning)
+check T12-merge "merge wrong: out=[$out] learnings=[$l]" eval '
+	test "$(grep -c "shared entry" <<<"$l")" = 1 && contains "$l" "clone entry" &&
+	contains "$l" "local entry" && contains "$out" "conflict: kept local file-notes" &&
+	contains "$(fnote "$(git hash-object go.mod)")" "local go.mod note" &&
+	test "$(git rev-parse refs/notes/learnings)" = "$(git --git-dir="$remote" rev-parse refs/notes/learnings)"'
 
 # T13 learnings: append, inject at session start, survive amend, --force replaces
 new_repo
