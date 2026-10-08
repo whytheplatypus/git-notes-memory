@@ -1,0 +1,33 @@
+status: current
+verified-at: aaf92376b24c80f4086df975629e7cb2ffe23521
+---
+git-notes-memory: a Claude Code plugin that keeps project memory in git notes
+instead of CLAUDE.md, so the memory lives in the repo's own object store and
+travels with it.
+
+Components
+- plugin/scripts/: plain bash + git + jq. lib.sh holds the shared note logic
+  (read/write/migrate/merge). There is one script per hook or command, and each
+  one exits 0 silently outside a git repo.
+- plugin/hooks/hooks.json wires the lifecycle: SessionStart (session-start.sh:
+  sync, fetch origin's notes, inject the architecture and learnings notes),
+  PreToolUse on Read/Edit/Write/Bash (pre-tool.sh: show file notes),
+  PostToolUse on edits (post-tool.sh: carry the note to the new blob, marked
+  needs-review), and Stop (stop.sh: remind about unreviewed notes and unrecorded
+  learnings).
+- plugin/skills/: git-notes (the protocol, not user-invocable), note,
+  notes-sync, init. These are thin wrappers that call the scripts.
+- Refs: architecture and learnings sit on the root commit, file-notes on blob
+  hashes, and meta (per-clone, never pushed) holds last-synced.
+- The repo root is the marketplace (.claude-plugin/marketplace.json ->
+  ./plugin), so there is no copy to keep in sync. tests/run.sh drives the hook
+  scripts against scratch repos using fake hook JSON.
+
+Key decisions
+- Notes on blobs are pinned to content, so they are migrated on edit and on
+  sync, and found through a `git log --follow` fallback, rather than attached to
+  paths.
+- Origin's notes are only staged under refs/notes/origin/* until that remote is
+  trusted, so an untrusted remote can't inject text into Claude's context.
+- Skills are used instead of commands/, because the docs mark commands/ as
+  legacy.
