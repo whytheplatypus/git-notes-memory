@@ -1,6 +1,5 @@
-status: needs-review
+status: current
 verified-at: e940db13773e0527ff564c8ff5f89688e89dc184
-migrated-from: 677e8fd0709b323afda62b51b04e7d08a1a49fd2
 ---
 convention | confirmed
 enter_file_repo cds to the top of the file's repo and sets $REL. Pathspecs like `git log -- "$REL"` and `"$sha:$REL"` assume that cwd; run from a subdirectory they resolve wrongly and give silent misses.
