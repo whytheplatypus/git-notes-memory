@@ -53,7 +53,7 @@ tests/run.sh                automated scratch-repo tests
 TESTING.md                  manual test guide
 ```
 
-The build directory itself is the marketplace, and its entry points straight at `plugin/`, so there is no copy to keep in sync.
+The repo root is the marketplace, and its entry points straight at `plugin/`, so there is no copy to keep in sync.
 
 ## Environment variables
 
@@ -78,7 +78,7 @@ Deviations from the original plan, and why.
 - **Learnings ref** (`refs/notes/learnings`, not in the original plan) replaces `.agent/learnings.md`. It is append-only for Claude and kept across amend/rebase via `notes.rewriteRef`. Directory-scoped learnings go here with a `Context:` line, because notes on directory tree objects would break whenever any file in the directory changed.
 - **`--list` and `--delete`** were added for pruning. `--list` treats the working-tree version of a modified file as current, and counts notes on older versions instead of listing them.
 - **Stop hook reminds once** per batch of edits, then clears its list, so an unresolved note doesn't trigger a reminder on every later turn.
-- **Marketplace** lives at the build root with `source: ./plugin`, instead of a copied `marketplace/plugins/` tree.
+- **Marketplace** lives at the repo root with `source: ./plugin`, instead of a copied `marketplace/plugins/` tree.
 - **`sync.sh --push`** was added so `/git-notes-memory:notes-sync` can push notes. It only pushes when `GIT_NOTES_MEMORY_SYNC=1` and an `origin` remote exists. Nothing pushes automatically.
 - **Migrated notes keep their original `verified-at`.** They are not stamped with the current HEAD, because they haven't been re-verified.
 - **Repo resolution:** `pre-tool.sh` and `post-tool.sh` resolve git from the edited file's directory, not the session `cwd`, so a file in a nested or sibling repo uses that repo's notes.

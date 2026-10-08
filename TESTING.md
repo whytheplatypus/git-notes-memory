@@ -1,11 +1,11 @@
 # Testing git-notes-memory
 
-Build directory: `/home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build`
+Repo: `/home/whytheplatypus/Development/git-notes-memory`
 
 ## 1. Automated
 
 ```bash
-bash /home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build/tests/run.sh
+bash /home/whytheplatypus/Development/git-notes-memory/tests/run.sh
 ```
 
 Expected output: `PASS` for T1–T15 plus the sub-checks T5-stop, T5-once, T9-stale, T10-clean, T12-enabled and T13-replace, then `ALL PASS`. The script exits non-zero if any check fails. Each run uses throwaway repos in a `mktemp -d` directory with its own git config, and deletes them afterwards.
@@ -23,10 +23,10 @@ echo '# poc' > README.md && git add -A && git commit -m readme
 ## 3. Load without installing (fastest loop)
 
 ```bash
-cd ~/tmp/gnm-poc && claude --plugin-dir /home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build/plugin
+cd ~/tmp/gnm-poc && claude --plugin-dir /home/whytheplatypus/Development/git-notes-memory/plugin
 ```
 
-After editing anything in `/home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build/plugin`, run `/reload-plugins` in the session.
+After editing anything in `/home/whytheplatypus/Development/git-notes-memory/plugin`, run `/reload-plugins` in the session.
 
 ## 4. Try it
 
@@ -47,7 +47,7 @@ After editing anything in `/home/whytheplatypus/Development/git-notes-memory/git
 - Hook execution and output: run `claude --debug`, or turn on debug in-session. A `PostToolUse` hook that exits 0 shows nothing in the transcript.
 - Run a hook by hand:
   ```bash
-  echo '{"session_id":"dbg","cwd":"'$PWD'","tool_name":"Read","tool_input":{"file_path":"'$PWD'/cmd/main.go"}}' | /home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build/plugin/scripts/pre-tool.sh
+  echo '{"session_id":"dbg","cwd":"'$PWD'","tool_name":"Read","tool_input":{"file_path":"'$PWD'/cmd/main.go"}}' | /home/whytheplatypus/Development/git-notes-memory/plugin/scripts/pre-tool.sh
   ```
 - Inspect a note:
   ```bash
@@ -59,11 +59,11 @@ After editing anything in `/home/whytheplatypus/Development/git-notes-memory/git
 ## 6. Desktop app (local marketplace)
 
 ```bash
-claude plugin validate /home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build
+claude plugin validate /home/whytheplatypus/Development/git-notes-memory
 ```
 
 ```bash
-claude plugin marketplace add /home/whytheplatypus/Development/git-notes-memory/git-notes-memory-build
+claude plugin marketplace add /home/whytheplatypus/Development/git-notes-memory
 ```
 
 In the desktop Code tab, in a **local** session on the scratch repo: **+ → Plugins → Add plugin**, choose `git-notes-memory`, scope **local (this repo only)**. Manage it later under **+ → Plugins → Manage plugins**.
@@ -86,7 +86,7 @@ rm -rf ~/tmp/gnm-poc
 
 ## 8. Before promoting
 
-- Push the marketplace directory to GitHub, then register it with `claude plugin marketplace add owner/repo`.
+- Push this repo to GitHub, then register it with `claude plugin marketplace add owner/repo`.
 - Turn on `GIT_NOTES_MEMORY_SYNC=1` against a throwaway remote first. Fetching uses non-forced `refs/notes/*:refs/notes/*`, so diverged notes refs fail to update instead of being overwritten.
 
 ## Design notes
