@@ -200,6 +200,37 @@ check T14 "list wrong: [$out]" eval '
 "$S/note.sh" go.mod --delete >/dev/null
 check T15 "note not deleted" test -z "$(fnote "$(git hash-object go.mod)")"
 
+# T16 Bash: notes for files named in the command, once per session
+new_repo
+"$S/note.sh" src/main.go "Bash-visible note" >/dev/null
+bash_hook() { # bash_hook <command> [session]
+	jq -n --arg cwd "$PWD" --arg c "$1" --arg s "${2:-bsess}" \
+		'{session_id: $s, cwd: $cwd, tool_name: "Bash", tool_input: {command: $c}}' |
+		"$S/pre-tool.sh"
+}
+out=$(bash_hook "sed -n 1,5p 'src/main.go' | head" | ctx)
+check T16 "bash note missing: [$out]" contains "$out" "Bash-visible note"
+out=$(bash_hook "cat src/main.go")
+check T16-once "bash note repeated: [$out]" test -z "$out"
+out=$(hook pre-tool Read "$R/src/main.go" bsess | ctx)
+check T16-read "Read should still show the note: [$out]" contains "$out" "Bash-visible note"
+out=$(bash_hook "ls -la; echo hi" other)
+check T16-none "expected no output: [$out]" test -z "$out"
+
+# T17 NotebookEdit: notebook_path is used, and the note migrates
+echo '{}' >nb.ipynb && commit nb
+"$S/note.sh" nb.ipynb "Notebook note" >/dev/null
+nb_hook() {
+	jq -n --arg cwd "$PWD" --arg p "$R/nb.ipynb" \
+		'{session_id: "sess", cwd: $cwd, tool_name: "NotebookEdit", tool_input: {notebook_path: $p}}' |
+		"$S/$1.sh"
+}
+out=$(nb_hook pre-tool | ctx)
+echo '{"cells": []}' >nb.ipynb
+out2=$(nb_hook post-tool | ctx)
+check T17 "notebook: pre=[$out] post=[$out2]" eval '
+	contains "$out" "Notebook note" && contains "$out2" "needs-review"'
+
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
 exit "$((fails > 0))"

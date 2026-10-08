@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# PostToolUse (Edit|Write): if the edited file had a note, copy it to the
-# new blob as needs-review and remind Claude to re-verify it.
+# PostToolUse (Edit|Write|NotebookEdit): if the edited file had a note, copy it
+# to the new blob as needs-review and remind Claude to re-verify it.
 . "$(dirname "$0")/lib.sh"
 
 hook_input
-path=$(field .tool_input.file_path)
+path=$(field '.tool_input.file_path // .tool_input.notebook_path')
 session=$(field .session_id)
 [ -n "$session" ] || exit 0
 saved=$(state_file "$session" "$(path_key "$path")")
