@@ -1,6 +1,5 @@
-status: needs-review
-verified-at: 06d88d5d365704cc3a298c8567509d877d549648
-migrated-from: d5036d6a30a049753fc52d875c721f541ac60487
+status: current
+verified-at: 73b87ccbf3d2da317eed24535ac48b9d2f4b1555
 ---
 gotcha | confirmed
 Rename+edit fixtures must stay at least ~50% similar or `git log --follow` will not link the versions, and the history fallback (T8) silently finds nothing. Pad test files (e.g. `seq 1 20 >>file`) before a rename+edit.
