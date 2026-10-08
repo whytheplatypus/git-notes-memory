@@ -10,9 +10,13 @@ touched=$(state_file "$session" touched)
 [ -f "$touched" ] || exit 0
 
 list=
-# Latest entry per path only; earlier blobs are intermediate edits.
+# Latest entry per path only; earlier blobs are intermediate edits. The file's
+# current version wins, since it may have changed (e.g. via Bash) and been
+# re-verified after the last Edit; the recorded blob covers a note left behind.
 while IFS=$'\t' read -r path blob; do
-	status=$( (enter_file_repo "$path" && note_read "$FILE_REF" "$blob" | parse_header status) )
+	status=$( (enter_file_repo "$path" && {
+		note_read "$FILE_REF" "$(git hash-object -- "$path")" || note_read "$FILE_REF" "$blob"
+	} | parse_header status) )
 	[ "$status" = needs-review ] && list="$list
 - $path"
 done < <(awk -F'\t' '{last[$1] = $2} END {for (p in last) print p "\t" last[p]}' "$touched")

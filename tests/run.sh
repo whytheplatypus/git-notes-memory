@@ -5,7 +5,6 @@ set -u
 S=$(cd "$(dirname "$0")/../plugin/scripts" && pwd)
 WORK=$(mktemp -d)
 export TMPDIR=$WORK/tmp GIT_CONFIG_GLOBAL=$WORK/gitconfig GIT_CONFIG_NOSYSTEM=1
-unset GIT_NOTES_MEMORY_SYNC
 mkdir -p "$TMPDIR"
 git config --global user.name test
 git config --global user.email test@example.com
@@ -87,6 +86,25 @@ check T5-once "stop should remind only once: [$out]" test -z "$out"
 "$S/note.sh" src/main.go "Entry point; re-verified" >/dev/null
 commit edit
 
+# Stop hook judges the file's current version: an edit outside Edit/Write
+# that gets re-verified clears the reminder; one that leaves the note behind
+# still reminds.
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// edit' >>src/main.go
+hook post-tool Edit "$R/src/main.go" >/dev/null
+echo '// bash edit' >>src/main.go
+"$S/note.sh" src/main.go "Entry point; re-verified after bash edit" >/dev/null
+out=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/stop.sh")
+hook pre-tool Edit "$R/src/main.go" >/dev/null
+echo '// edit 2' >>src/main.go
+hook post-tool Edit "$R/src/main.go" >/dev/null
+echo '// bash edit 2' >>src/main.go
+out2=$(jq -n --arg cwd "$PWD" '{session_id: "sess", cwd: $cwd}' | "$S/stop.sh" | ctx)
+check T5-current "stop: re-verified=[$out] left-behind=[$out2]" eval '
+	test -z "$out" && contains "$out2" "src/main.go"'
+"$S/note.sh" src/main.go "Entry point; re-verified" >/dev/null
+commit edit2
+
 # T6 pure rename → note still resolves
 git mv src/main.go src/app.go && commit rename
 out=$(hook pre-tool Read "$R/src/app.go" | ctx)
@@ -141,28 +159,30 @@ check T11 "notes lost after gc" eval '
 	contains "$(fnote "$h")" "Uncommitted draft" &&
 	contains "$(git notes --ref=architecture show "$(git rev-list --max-parents=0 HEAD)")" "Arch"'
 
-# T12 session start never fetches by default; --push pushes our refs, not meta
+# T12 session start only stages remote notes; --push pushes our refs, not
+# meta, and trusts origin
 remote=$(mktemp -d "$WORK/remote.XXXX")
 git init -q --bare "$remote"
 git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null
 git --git-dir="$remote" notes --ref=remoteonly add -m "remote only" HEAD
-start >/dev/null
-check T12 "fetched without GIT_NOTES_MEMORY_SYNC" test -z "$(git for-each-ref refs/notes/remoteonly)"
-"$S/sync.sh" --push
-check T12-push "push should send file-notes and architecture, not meta" eval '
+out=$(start)
+check T12 "remote notes leaked into local refs: [$out]" eval '
+	test -z "$(git for-each-ref refs/notes/remoteonly)" &&
+	test -n "$(git for-each-ref refs/notes/origin/remoteonly)" && ! contains "$out" "--trust"'
+"$S/sync.sh" --push >/dev/null
+check T12-push "push should send file-notes and architecture, not meta, and trust origin" eval '
 	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/file-notes)" &&
 	test -n "$(git --git-dir="$remote" for-each-ref refs/notes/architecture)" &&
-	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/meta)"'
-GIT_NOTES_MEMORY_SYNC=1 start >/dev/null
-check T12-enabled "sync=1 should fetch at session start" test -n "$(git for-each-ref refs/notes/remoteonly)"
+	test -z "$(git --git-dir="$remote" for-each-ref refs/notes/meta)" &&
+	test "$(git config gitnotesmemory.trustedRemote)" = "$remote"'
 
 # T12-merge diverged clones: learnings union, file-note conflict keeps local
 clone=$(mktemp -d "$WORK/clone.XXXX")
 git clone -q "$remote" "$clone" && git -C "$clone" fetch -q origin 'refs/notes/*:refs/notes/*'
 "$S/note.sh" learning "shared entry" >/dev/null
-"$S/sync.sh" --push
+"$S/sync.sh" --push >/dev/null
 (cd "$clone" && "$S/note.sh" learning "clone entry" >/dev/null &&
-	"$S/note.sh" go.mod "clone go.mod note" >/dev/null && "$S/sync.sh" --push)
+	"$S/note.sh" go.mod "clone go.mod note" >/dev/null && "$S/sync.sh" --push >/dev/null)
 "$S/note.sh" learning "local entry" >/dev/null
 "$S/note.sh" go.mod "local go.mod note" >/dev/null
 out=$("$S/sync.sh" --push 2>&1)
@@ -230,6 +250,40 @@ echo '{"cells": []}' >nb.ipynb
 out2=$(nb_hook post-tool | ctx)
 check T17 "notebook: pre=[$out] post=[$out2]" eval '
 	contains "$out" "Notebook note" && contains "$out2" "needs-review"'
+
+# T18 fresh clone: notes staged and the user asked; --trust merges; later
+# sessions merge and announce; --ignore stops fetching
+sysmsg() { jq -r '.systemMessage // empty'; }
+new_repo
+origin_repo=$R remote=$(mktemp -d "$WORK/remote.XXXX")
+git init -q --bare "$remote"
+"$S/note.sh" learning "origin entry" >/dev/null
+git remote add origin "$remote" && git push -q origin HEAD 2>/dev/null && "$S/sync.sh" --push >/dev/null
+fresh=$(mktemp -d "$WORK/fresh.XXXX")
+git clone -q "$remote" "$fresh" && cd "$fresh"
+out=$(start)
+check T18 "untrusted origin should ask, not load: [$out]" eval '
+	contains "$(sysmsg <<<"$out")" "1 learnings entries" &&
+	contains "$(sysmsg <<<"$out")" "notes-sync --trust" &&
+	contains "$(ctx <<<"$out")" "not loaded" && ! contains "$out" "origin entry" &&
+	test -z "$(git for-each-ref refs/notes/learnings)"'
+"$S/sync.sh" --trust >/dev/null
+check T18-trust "--trust should merge and trust" eval '
+	contains "$("$S/note.sh" learning)" "origin entry" &&
+	test "$(git config gitnotesmemory.trustedRemote)" = "$remote"'
+(cd "$origin_repo" && "$S/note.sh" learning "second entry" >/dev/null && "$S/sync.sh" --push >/dev/null)
+out=$(start)
+check T18-merge "trusted session start should merge and announce: [$out]" eval '
+	contains "$(sysmsg <<<"$out")" "merged notes from origin" &&
+	contains "$(sysmsg <<<"$out")" "+1 learnings entries" &&
+	contains "$(ctx <<<"$out")" "just merged from origin (written on another clone" &&
+	contains "$(ctx <<<"$out")" "second entry"'
+"$S/sync.sh" --ignore >/dev/null
+(cd "$origin_repo" && "$S/note.sh" learning "third entry" >/dev/null && "$S/sync.sh" --push >/dev/null)
+out=$(start)
+check T18-ignore "--ignore should stop fetching: [$out]" eval '
+	test -z "$(sysmsg <<<"$out")" && ! contains "$out" "third entry" &&
+	! contains "$(git notes --ref=origin/learnings show "$(git rev-list --max-parents=0 HEAD)")" "third entry"'
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "$fails FAILED"; fi
